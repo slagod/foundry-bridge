@@ -1,6 +1,6 @@
 """Local bridge between scripts and a FoundryVTT world open in the GM's browser."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 DEFAULT_PORT = 8765
 
@@ -12,4 +12,8 @@ OPS = frozenset({
     "documents.upsert",
     "documents.find",
     "documents.delete",
+    "documents.get",
+    "packs.list",
+    "packs.export",
+    "files.fetch",
 })

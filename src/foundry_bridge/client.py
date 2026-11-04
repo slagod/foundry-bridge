@@ -85,3 +85,22 @@ class Bridge:
 
     def delete(self, type: str, key: str) -> int:
         return self.call("documents.delete", type=type, key=key)
+
+    # --- read -----------------------------------------------------------------
+    def get(self, type: str, ids: list[str] | None = None, folder: str | None = None) -> list[dict]:
+        """Full data of world documents (any, not only bridge-created), optionally by ids or top folder name."""
+        args = {"type": type} | ({"ids": ids} if ids else {}) | ({"folder": folder} if folder else {})
+        return self.call("documents.get", **args)
+
+    def packs(self) -> list[dict]:
+        """Compendiums of allowed document types: {id, label, type, package, size}."""
+        return self.call("packs.list")
+
+    def export_pack(self, pack: str, ids: list[str] | None = None) -> list[dict]:
+        """Full data of a compendium's documents (each with its uuid)."""
+        return self.call("packs.export", pack=pack, **({"ids": ids} if ids else {}))
+
+    def fetch_file(self, path: str) -> tuple[bytes, str | None]:
+        """A file served by Foundry (e.g. an actor's img), as (bytes, mime)."""
+        r = self.call("files.fetch", path=path)
+        return base64.b64decode(r["b64"]), r.get("mime")

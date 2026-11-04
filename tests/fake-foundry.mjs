@@ -42,6 +42,7 @@ function docClass(type) {
     get id() { return this._id; }
     get uuid() { return `${type}.${this._id}`; }
     getFlag(scope, k) { return this.flags?.[scope]?.[k]; }
+    toObject() { const o = structuredClone({ ...this }); o._id = this._id; return o; }
     async update(data) { merge(this, structuredClone(data)); return this; }
     async delete() { const c = collections.get(type); c.splice(c.indexOf(this), 1); }
     getEmbeddedCollection(name) { return this[Doc.metadata.embedded[name]]; }
@@ -64,8 +65,35 @@ globalThis.game = {
   settings: { register() {}, get: (m, k) => settings.get(`${m}.${k}`) },
   collections: { get: t => coll(t) },
   get folders() { return coll("Folder"); },
+  get packs() { return Object.assign(packs, { get: id => packs.find(p => p.collection === id) }); },
 };
-globalThis.foundry = { utils: { deepClone: structuredClone, mergeObject: (a, b) => merge(a, b) } };
+// Files served by the fake server: fetch("/worlds/fake/portrait.webp").
+const served = new Map([["/worlds/fake/portrait.webp", new Uint8Array([1, 2, 3])]]);
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url, ...rest) => {
+  if (typeof url === "string" && url.startsWith("/")) {
+    const b = served.get(url);
+    return new Response(b ?? "", { status: b ? 200 : 404, headers: { "content-type": "image/webp" } });
+  }
+  return realFetch(url, ...rest);
+};
+globalThis.foundry = { utils: { deepClone: structuredClone, mergeObject: (a, b) => merge(a, b), getRoute: p => `/${p}` } };
+
+// Two compendiums: an allowed Item pack and a Macro pack the bridge must refuse.
+const pack = (collection, documentName, docs) => {
+  const Doc = docClass(documentName === "Macro" ? "Macro" : documentName);
+  const made = docs.map(d => Object.defineProperty(new Doc(d), "uuid", { value: `Compendium.${collection}.${documentName}.${d.name}` }));
+  return {
+    collection, documentName, metadata: { label: collection, packageName: collection.split(".")[0] },
+    index: { size: made.length },
+    async getDocuments(q = {}) { return q._id__in ? made.filter(d => q._id__in.includes(d.id)) : made; },
+  };
+};
+const packs = [
+  pack("wfrp4e-core.items", "Item", [{ name: "Dagger", type: "weapon" }, { name: "Sword", type: "weapon" }]),
+  pack("macros.m", "Macro", [{ name: "evil" }]),
+];
+
 globalThis.ui = { notifications: Object.fromEntries(["info", "warn", "error"].map(l => [l, m => console.log(`[ui.${l}] ${m}`)])) };
 globalThis.Hooks = { once: (h, fn) => (hooks[h] = fn) };
 globalThis.FilePicker = {

@@ -33,6 +33,27 @@ function collectionFor(type) {
   return game.collections.get(type);
 }
 
+function packFor(id) {
+  const pack = game.packs.get(id);
+  if (!pack) throw new Error(`no compendium: ${id}`);
+  if (!TYPES.includes(pack.documentName)) throw new Error(`compendium type not allowed: ${pack.documentName}`);
+  return pack;
+}
+
+// Files the GM's browser can already load from this Foundry server; relative paths only.
+function servedPath(path) {
+  const p = String(path ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!p || /^[a-z][a-z0-9+.-]*:/i.test(p) || p.split("/").some(s => s === "..")) throw new Error(`bad path: ${path}`);
+  return p;
+}
+
+function toB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
 const byKey = (type, key) => collectionFor(type).filter(d => d.getFlag(MOD, "key") === key);
 
 async function folderId(type, name) {
@@ -93,6 +114,33 @@ const OPS = {
   async "documents.find"({ type, key }) {
     const docs = key ? byKey(type, key) : collectionFor(type).filter(d => d.getFlag(MOD, "key"));
     return docs.map(d => ({ uuid: d.uuid, id: d.id, name: d.name, key: d.getFlag(MOD, "key") }));
+  },
+
+  // Read-only: full data of world documents, e.g. actors with their items (statblocks).
+  async "documents.get"({ type, ids, folder }) {
+    let docs = collectionFor(type).contents ?? [...collectionFor(type)];
+    if (ids?.length) docs = docs.filter(d => ids.includes(d.id));
+    if (folder) docs = docs.filter(d => d.folder?.name === folder);
+    return docs.map(d => d.toObject());
+  },
+
+  async "packs.list"() {
+    return game.packs.filter(p => TYPES.includes(p.documentName)).map(p => ({
+      id: p.collection, label: p.metadata.label, type: p.documentName,
+      package: p.metadata.packageName, size: p.index.size,
+    }));
+  },
+
+  async "packs.export"({ pack, ids }) {
+    const docs = await packFor(pack).getDocuments(ids?.length ? { _id__in: ids } : {});
+    return docs.map(d => ({ ...d.toObject(), uuid: d.uuid }));
+  },
+
+  async "files.fetch"({ path }) {
+    const p = servedPath(path);
+    const res = await fetch(foundry.utils.getRoute ? foundry.utils.getRoute(p) : `/${p}`);
+    if (!res.ok) throw new Error(`fetch ${p}: HTTP ${res.status}`);
+    return { path: p, mime: res.headers.get("content-type"), b64: toB64(await res.arrayBuffer()) };
   },
 
   async "documents.delete"({ type, key }) {

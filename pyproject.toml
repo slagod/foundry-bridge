@@ -1,6 +1,6 @@
 [project]
 name = "foundry-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local bridge between scripts and a FoundryVTT world open in the GM's browser"
 requires-python = ">=3.10"
 dependencies = ["aiohttp>=3.9"]

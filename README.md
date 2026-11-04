@@ -51,6 +51,12 @@ fb.upsert("Scene", "rpgmaps:inn", {..., "journal": j["id"]}, folder="rpg-maps")
 
 Operacje: `status`, `files.upload {path, b64, mime}`, `documents.upsert {type, key, data, folder?}`,
 `documents.find {type, key?}`, `documents.delete {type, key}`.
+
+Odczyt (np. statbloki, kompendia systemu, portrety):
+`documents.get {type, ids?, folder?}` — pełne dane dokumentów świata, nie tylko utworzonych przez bridge;
+`packs.list` — kompendia dozwolonych typów; `packs.export {pack, ids?}` — ich dokumenty z `uuid`;
+`files.fetch {path}` — plik serwowany przez Foundry (ścieżka względna, np. `worlds/x/portrait.webp`) jako base64.
+W kliencie: `fb.get()`, `fb.packs()`, `fb.export_pack()`, `fb.fetch_file()`.
 Kody: 401 zły klucz, 400 nieznana operacja, 503 brak świata, 502 błąd w Foundry, 504 brak odpowiedzi.
 
 ## Bezpieczeństwo
@@ -60,12 +66,14 @@ Kody: 401 zły klucz, 400 nieznana operacja, 503 brak świata, 502 błąd w Foun
 - **Nie ma operacji „wykonaj JS”** i typu `Macro` — zakres to biała lista typów dokumentów
   (`Scene`, `JournalEntry`, `Actor`, `Item`, `RollTable`, `Playlist`, `Cards`) i katalogów
   uploadu (ustawienie świata, domyślnie `rpg-maps, bridge`).
+- Odczyt obejmuje te same typy dokumentów; `files.fetch` tylko ścieżki względne na serwerze Foundry
+  (bez schematu URL i `..`) — to, co przeglądarka GM i tak może pobrać.
 - Operacje wykonuje tylko klient GM, który sam włączył połączenie.
 
 ## Testy
 
 ```sh
-uv run python -m unittest discover -s tests       # bridge + klient z udawanym modułem
+uv run python -m unittest discover -s tests       # bridge + klient; z node także bridge.js na atrapie
 node tests/fake-foundry.mjs ws://127.0.0.1:8765/ws  # prawdziwy bridge.js na atrapie API Foundry
 ```
 

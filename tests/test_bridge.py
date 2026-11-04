@@ -1,7 +1,10 @@
 """Bridge + client against a fake module (the real one runs only inside Foundry)."""
 import asyncio
 import base64
+import os
+import shutil
 import unittest
+from pathlib import Path
 
 import aiohttp
 from aiohttp import web
@@ -113,6 +116,64 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(old.close_code, 4000)
         st = await self.run_client(self.client.status)
         self.assertTrue(st["connected"])
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
+    """The real module/scripts/bridge.js on the fake Foundry API (tests/fake-foundry.mjs)."""
+
+    async def asyncSetUp(self):
+        self.runner = web.AppRunner(make_app(KEY, timeout=5))
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        self.client = Client(url=f"http://127.0.0.1:{port}", key=KEY)
+        fake = Path(__file__).with_name("fake-foundry.mjs")
+        self.node = await asyncio.create_subprocess_exec(
+            "node", str(fake), f"ws://127.0.0.1:{port}/ws", env={**os.environ, "FOUNDRY_BRIDGE_KEY": KEY},
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        for _ in range(50):
+            if (await asyncio.to_thread(self.client.status))["connected"]:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            self.fail("fake module did not connect")
+
+    async def asyncTearDown(self):
+        self.node.kill()
+        await self.node.wait()
+        await self.runner.cleanup()
+
+    def run_client(self, fn, *a, **kw):
+        return asyncio.to_thread(fn, *a, **kw)
+
+    async def test_get_returns_all_world_documents_with_items(self):
+        await self.run_client(self.client.upsert, "Actor", "t:a", {"name": "Etelka", "items": [{"name": "Dagger"}]})
+        actors = await self.run_client(self.client.get, "Actor")
+        self.assertEqual([a["name"] for a in actors], ["Etelka"])
+        self.assertEqual(actors[0]["items"][0]["name"], "Dagger")
+        only = await self.run_client(self.client.get, "Actor", ids=["nope"])
+        self.assertEqual(only, [])
+
+    async def test_packs_list_and_export(self):
+        packs = await self.run_client(self.client.packs)
+        self.assertEqual([p["id"] for p in packs], ["wfrp4e-core.items"])  # Macro pack hidden
+        self.assertEqual(packs[0]["size"], 2)
+        items = await self.run_client(self.client.export_pack, "wfrp4e-core.items")
+        self.assertEqual({i["name"] for i in items}, {"Dagger", "Sword"})
+        self.assertTrue(items[0]["uuid"].startswith("Compendium.wfrp4e-core.items."))
+        with self.assertRaises(BridgeError) as e:
+            await self.run_client(self.client.export_pack, "macros.m")
+        self.assertIn("not allowed", str(e.exception))
+
+    async def test_fetch_file_only_relative_paths(self):
+        data, mime = await self.run_client(self.client.fetch_file, "worlds/fake/portrait.webp")
+        self.assertEqual(data, b"\x01\x02\x03")
+        self.assertEqual(mime, "image/webp")
+        for bad in ("https://evil.example/x.png", "worlds/../../etc/passwd", "data:text/plain,hi"):
+            with self.assertRaises(BridgeError):
+                await self.run_client(self.client.fetch_file, bad)
 
 
 if __name__ == "__main__":

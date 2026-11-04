@@ -1,0 +1,12 @@
+{
+  "id": "foundry-bridge",
+  "title": "Foundry Bridge",
+  "description": "Lets local scripts create and update scenes, journals, actors and items in the open world through a bridge on the GM's machine.",
+  "version": "0.1.0",
+  "authors": [{ "name": "Sebastian" }],
+  "compatibility": { "minimum": "12", "verified": "13" },
+  "esmodules": ["scripts/bridge.js"],
+  "url": "https://github.com/slagod/foundry-bridge",
+  "manifest": "https://github.com/slagod/foundry-bridge/releases/latest/download/module.json",
+  "download": "https://github.com/slagod/foundry-bridge/releases/latest/download/module.zip"
+}

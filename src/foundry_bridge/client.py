@@ -79,6 +79,11 @@ class Bridge:
             args["folder"] = folder
         return self.call("documents.upsert", **args)
 
+    def set_images(self, type: str, id: str, img: str | None = None, token: str | None = None) -> dict:
+        """Point an existing world Actor/Item (by id) at pictures already uploaded; nothing else changes."""
+        return self.call("documents.images", type=type, id=id, **({"img": img} if img else {}),
+                         **({"token": token} if token else {}))
+
     def find(self, type: str, key: str | None = None) -> list[dict]:
         args = {"type": type} | ({"key": key} if key else {})
         return self.call("documents.find", **args)

@@ -50,7 +50,10 @@ fb.upsert("Scene", "rpgmaps:inn", {..., "journal": j["id"]}, folder="rpg-maps")
 | `POST /batch` `{ops: [...]}` | po kolei, stop na pierwszym błędzie |
 
 Operacje: `status`, `files.upload {path, b64, mime}`, `documents.upsert {type, key, data, folder?}`,
-`documents.find {type, key?}`, `documents.delete {type, key}`.
+`documents.find {type, key?}`, `documents.delete {type, key}`,
+`documents.images {type: Actor|Item, id, img?, token?}` — tylko obrazy istniejącego dokumentu świata (np. aktora
+pobranego ze świata): `img` i tekstura tokenu prototypowego; ścieżki względne, inne pola nie do ruszenia
+(od 0.3.0; w kliencie `fb.set_images()`).
 
 Odczyt (np. statbloki, kompendia systemu, portrety):
 `documents.get {type, ids?, folder?}` — pełne dane dokumentów świata, nie tylko utworzonych przez bridge;

@@ -167,6 +167,16 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
             await self.run_client(self.client.export_pack, "macros.m")
         self.assertIn("not allowed", str(e.exception))
 
+    async def test_images_of_an_existing_actor_only(self):
+        a = await self.run_client(self.client.upsert, "Actor", "t:b", {"name": "Albert", "img": "old.webp", "system": {"x": 1}})
+        r = await self.run_client(self.client.set_images, "Actor", a["id"], "studio/a.webp", "studio/a-token.png")
+        self.assertEqual((r["img"], r["token"]), ("studio/a.webp", "studio/a-token.png"))
+        got = (await self.run_client(self.client.get, "Actor", ids=[a["id"]]))[0]
+        self.assertEqual((got["img"], got["system"]), ("studio/a.webp", {"x": 1}))
+        for bad in (("Scene", a["id"], "x.webp"), ("Actor", "nope", "x.webp"), ("Actor", a["id"], "https://evil/x.png")):
+            with self.assertRaises(BridgeError):
+                await self.run_client(self.client.set_images, *bad)
+
     async def test_fetch_file_only_relative_paths(self):
         data, mime = await self.run_client(self.client.fetch_file, "worlds/fake/portrait.webp")
         self.assertEqual(data, b"\x01\x02\x03")

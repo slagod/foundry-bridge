@@ -111,6 +111,20 @@ const OPS = {
     return { uuid: doc.uuid, id: doc.id, created };
   },
 
+  // Only the pictures of an existing world document (e.g. an actor pulled from the world): img and, for actors,
+  // the prototype token's texture. Paths must be files this server serves. Nothing else can be changed this way.
+  async "documents.images"({ type, id, img, token }) {
+    if (!["Actor", "Item"].includes(type)) throw new Error(`documents.images: Actor or Item, not ${type}`);
+    const doc = collectionFor(type).find(d => d.id === id);
+    if (!doc) throw new Error(`${type} ${id} not in the world`);
+    const data = {};
+    if (img) data.img = servedPath(img);
+    if (token && type === "Actor") data.prototypeToken = { texture: { src: servedPath(token) } };
+    if (!Object.keys(data).length) throw new Error("documents.images: nothing to set");
+    await doc.update(data);
+    return { uuid: doc.uuid, id: doc.id, img: doc.img, token: doc.prototypeToken?.texture?.src ?? null };
+  },
+
   async "documents.find"({ type, key }) {
     const docs = key ? byKey(type, key) : collectionFor(type).filter(d => d.getFlag(MOD, "key"));
     return docs.map(d => ({ uuid: d.uuid, id: d.id, name: d.name, key: d.getFlag(MOD, "key") }));

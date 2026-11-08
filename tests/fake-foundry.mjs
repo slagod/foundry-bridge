@@ -132,6 +132,11 @@ const users = withGet([{ id: "gm1", name: "Gamemaster", isGM: true, active: true
   { id: "u2", name: "Ania", isGM: false, active: true, character: null }]);
 const shared = [];
 globalThis.Journal = { show: async (doc, opts) => shared.push({ journal: doc.id, opts }) };
+globalThis.ImagePopout = class {                                   // v12 shape; v13 sits in foundry.applications.apps
+  constructor(src, opts) { this.src = src; this.opts = opts; }
+  render() { shared.push({ local: this.src }); return this; }
+  async shareImage() { shared.push({ shared: this.src }); }
+};
 globalThis.fromUuid = async uuid => {
   const p = uuid.split(".");
   if (p[0] === "Compendium") {

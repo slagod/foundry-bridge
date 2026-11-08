@@ -78,7 +78,7 @@ W trakcie gry (scena: id, klucz, `"active"` albo `"viewed"`):
 | `packs.import {pack, ids, folder?}` | `fb.import_pack()` | dokumenty kompendium do świata |
 | `scenes.activate / scenes.view {scene}` | `fb.activate()`, `fb.view()` | dla wszystkich / tylko MG |
 | `combat.start {scene, tokens?, roll?}`, `combat.end {scene?}` | `fb.start_combat()`, `fb.end_combat()` | `roll`: `"npc"` albo `"all"`; koniec bez okna potwierdzenia |
-| `show {img? \| journal, page?, title?, users?}` | `fb.show()` | obraz (ścieżka serwowana przez Foundry) albo dziennik/strona u graczy |
+| `show {img? \| journal, page?, title?, users?}` | `fb.show()` | obraz (ścieżka serwowana przez Foundry) albo dziennik/strona u graczy; u MG otwiera się to samo |
 | `ui.open {type, id}` | `fb.open()` | arkusz u MG; scena — podgląd |
 | `world.state` | `fb.state()` | aktywna i oglądana scena, walka (kolejność), gracze z postaciami, zaznaczone i namierzone tokeny MG, grające playlisty |
 | `playlists.play {playlist, sound?}`, `playlists.stop {playlist?}` | `fb.play()`, `fb.stop()` | |

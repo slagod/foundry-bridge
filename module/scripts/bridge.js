@@ -374,9 +374,12 @@ const OPS = {
   },
 
   async show({ img, journal, page, title, users }) {
+    // Foundry sends "show players" to the other clients only; the GM gets the same popout here.
     if (img) {
-      const image = servedPath(img);
-      game.socket.emit("shareImage", { image, title: title ?? "", uuid: null });
+      const image = servedPath(img), V13 = foundry.applications?.apps?.ImagePopout;
+      const pop = V13 ? new V13({ src: image, window: { title: title ?? "" } }) : new ImagePopout(image, { title: title ?? "" });
+      pop.render(true);
+      await pop.shareImage();
       return { shown: "image", image };
     }
     if (!journal) throw new Error("show: img or journal");
@@ -385,6 +388,7 @@ const OPS = {
       ?? (() => { throw new Error(`no page ${page} in ${j.name}`); })()) : j;
     const J = foundry.documents?.collections?.Journal ?? globalThis.Journal;
     await J.show(target, { force: true, ...(users?.length ? { users: userIds(users) } : {}) });
+    (target.parent ?? target).sheet?.render(true);
     return { shown: "journal", ...brief(target) };
   },
 

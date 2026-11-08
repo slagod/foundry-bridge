@@ -1,6 +1,6 @@
 """Local bridge between scripts and a FoundryVTT world open in the GM's browser."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 DEFAULT_PORT = 8765
 

@@ -203,6 +203,7 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(chat[-1]["bridge"] and chat[-1]["flags"]["foundry-bridge"]["share"])
         self.assertIn("<strong>głowę</strong>", chat[-1]["content"])
         self.assertNotIn("<img", chat[-1]["content"])
+        self.assertIn("system", chat[-1])
         await self.run_client(self.client.say, "Wszyscy", whisper=None, speaker="Narrator")
         last = [e for e in (await self.run_client(self.client.events))["events"] if e["kind"] == "chat"][-1]
         self.assertEqual((last["whisper"], last["speaker"]), ([], {"alias": "Narrator"}))

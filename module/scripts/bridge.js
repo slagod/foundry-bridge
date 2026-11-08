@@ -430,6 +430,7 @@ function chatData(m) {
   const o = m.toObject();
   return {
     id: m.id, author: o.author ?? o.user ?? null, speaker: o.speaker, content: o.content, flavor: o.flavor ?? "",
+    type: o.type ?? null, system: o.system ?? {},          // typed messages (wfrp4e 9: tests, opposed results) keep their data here
     whisper: o.whisper ?? [], blind: !!o.blind, flags: o.flags ?? {}, bridge: !!o.flags?.[MOD],
     rolls: (m.rolls ?? []).map(r => ({ formula: r.formula, total: r.total,
       dice: (r.dice ?? []).map(d => ({ faces: d.faces, results: d.results.map(x => x.result) })) })),

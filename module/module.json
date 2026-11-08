@@ -2,7 +2,7 @@
   "id": "foundry-bridge",
   "title": "Foundry Bridge",
   "description": "Lets local scripts create and update scenes, journals, actors and items in the open world, place tokens, run combat, post to chat and hear what happens at the table, through a bridge on the GM's machine.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "authors": [{ "name": "Sebastian" }],
   "compatibility": { "minimum": "12", "verified": "13" },
   "esmodules": ["scripts/bridge.js"],

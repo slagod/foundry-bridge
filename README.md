@@ -84,7 +84,7 @@ W trakcie gry (scena: id, klucz, `"active"` albo `"viewed"`):
 | `playlists.play {playlist, sound?}`, `playlists.stop {playlist?}` | `fb.play()`, `fb.stop()` | |
 
 Zdarzenia (ustawienie modułu *Send table events to the bridge*, domyślnie wyłączone): `chat`, `chat.update`
-(wiadomość z `rolls` i surowymi `flags` systemu — np. test broni, lokacja trafienia), `combat`, `combat.end`,
+(wiadomość z `rolls`, `type`, `system` i `flags` — dane systemu bez interpretacji; wfrp4e 9 trzyma test broni, lokację trafienia i obrażenia w `system`), `combat`, `combat.end`,
 `scene`, `target`, `control`, `actor`, `token` (zmiany aktora niepowiązanego), `item.create`, `item.delete`.
 Każde ma `kind`, `seq`, `at`, `scene`; bridge trzyma ostatnie 5000, numeracja od nowa po restarcie (`boot`).
 W kliencie `for e in fb.listen(): …`. Co znaczy rzut, wie narzędzie systemu gry, nie bridge.

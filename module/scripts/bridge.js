@@ -62,6 +62,86 @@ async function folderId(type, name) {
   return f.id;
 }
 
+// A document of an allowed type by world id, bridge key, or uuid (world only: compendium documents are read-only).
+async function docFor(type, ref) {
+  if (!ref) throw new Error(`${type}: no id`);
+  const coll = collectionFor(type);
+  let d = coll.get?.(ref) ?? coll.find(x => x.id === ref) ?? byKey(type, ref)[0];
+  if (!d && String(ref).includes(".")) {
+    const u = await fromUuid(ref);
+    if (u?.pack) throw new Error(`${ref} is in a compendium — packs.import it first`);
+    if (u?.documentName === type) d = u;
+  }
+  if (!d) throw new Error(`${type} not found: ${ref}`);
+  return d;
+}
+
+async function sceneFor(ref) {
+  if (ref === "active") return game.scenes.active ?? (() => { throw new Error("no active scene"); })();
+  if (ref === "viewed" || !ref) return game.scenes.viewed ?? (() => { throw new Error("no viewed scene"); })();
+  return docFor("Scene", ref);
+}
+
+// An actor by id / key / uuid; a token's uuid gives that token's actor (unlinked enemies have their own).
+async function actorFor(ref) {
+  if (String(ref ?? "").includes(".")) {
+    const u = await fromUuid(ref);
+    if (u?.pack) throw new Error(`${ref} is in a compendium — packs.import it first`);
+    if (u?.documentName === "Token") { if (!u.actor) throw new Error(`token without an actor: ${ref}`); return u.actor; }
+    if (u?.documentName === "Actor") return u;
+  }
+  return docFor("Actor", ref);
+}
+
+// A world actor for a token: world refs as they are; a compendium actor is imported once (and reused after).
+async function tokenActor(ref) {
+  if (String(ref ?? "").startsWith("Compendium.")) {
+    const have = game.actors.find(a => (a._stats?.compendiumSource ?? a.flags?.core?.sourceId) === ref);
+    if (have) return have;
+    const src = await fromUuid(ref);
+    if (src?.documentName !== "Actor") throw new Error(`not an actor: ${ref}`);
+    return game.actors.importFromCompendium(game.packs.get(src.pack), src.id, { folder: await folderId("Actor", "bridge") });
+  }
+  return actorFor(ref);
+}
+
+// x, y: px from the map's top-left corner, or grid cells with grid: true. Foundry counts from the padded canvas.
+function place(sc, t) {
+  const out = { ...t };
+  delete out.grid; delete out.actor;
+  if (t.x === undefined && t.y === undefined) return out;
+  const d = sc.dimensions, g = t.grid ? (sc.grid?.size ?? d.size) : 1;
+  if (t.x !== undefined) out.x = d.sceneX + t.x * g;
+  if (t.y !== undefined) out.y = d.sceneY + t.y * g;
+  return out;
+}
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+// Chat text from scripts is text, never HTML: Foundry renders message HTML in every player's browser.
+function textHtml(t) {
+  return String(t).trim().split(/\n\s*\n/).map(par => "<p>" + esc(par)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/\n/g, "<br>") + "</p>").join("");
+}
+
+function userIds(who) {
+  if (who === "gm") return game.users.filter(u => u.isGM).map(u => u.id);
+  return [].concat(who).map(w => (game.users.get(w) ?? game.users.getName?.(w) ?? game.users.find(u => u.name === w)
+    ?? (() => { throw new Error(`no user: ${w}`); })()).id);
+}
+
+const brief = d => ({ id: d.id, uuid: d.uuid, name: d.name });
+
+function combatData(c) {
+  return {
+    id: c.id, scene: c.scene?.id ?? null, round: c.round, turn: c.turn, started: !!c.started,
+    current: c.combatant ? { id: c.combatant.id, name: c.combatant.name, tokenId: c.combatant.tokenId, actorId: c.combatant.actorId } : null,
+    order: (c.turns ?? []).map(t => ({ id: t.id, name: t.name, tokenId: t.tokenId, actorId: t.actorId,
+      initiative: t.initiative ?? null, defeated: !!t.isDefeated, hidden: !!t.hidden })),
+  };
+}
+
 const OPS = {
   async status() {
     return info();
@@ -163,7 +243,241 @@ const OPS = {
     for (const d of docs) await d.delete();
     return docs.length;
   },
+
+  // Fields of an existing world Actor or Item (also ones the bridge did not create). Embedded documents
+  // (an actor's items, effects) go through actors.items.*: sending them here would replace the whole list.
+  async "documents.update"({ type, id, data }) {
+    if (!["Actor", "Item"].includes(type)) throw new Error(`documents.update: Actor or Item, not ${type}`);
+    const doc = await docFor(type, id);
+    const embedded = Object.values(doc.constructor.metadata?.embedded ?? {});
+    const bad = Object.keys(data ?? {}).filter(k => embedded.includes(k) || k === "_id");
+    if (bad.length) throw new Error(`documents.update: ${bad.join(", ")} can't be set here (items: actors.items.*)`);
+    if (!Object.keys(data ?? {}).length) throw new Error("documents.update: nothing to set");
+    await doc.update(data);
+    return brief(doc);
+  },
+
+  // Items for an actor: item data, or the uuid of an item in a compendium or the world (copied).
+  async "actors.items.add"({ actor, items }) {
+    const a = await actorFor(actor);
+    const datas = [];
+    for (const it of items ?? []) {
+      if (typeof it !== "string") { datas.push(it); continue; }
+      const src = await fromUuid(it);
+      if (src?.documentName !== "Item") throw new Error(`not an item: ${it}`);
+      const o = src.toObject();
+      delete o._id;
+      if (src.pack) o._stats = { ...(o._stats ?? {}), compendiumSource: src.uuid };
+      datas.push(o);
+    }
+    if (!datas.length) throw new Error("actors.items.add: no items");
+    return (await a.createEmbeddedDocuments("Item", datas)).map(brief);
+  },
+
+  async "actors.items.update"({ actor, items }) {
+    const a = await actorFor(actor);
+    if (!items?.length || items.some(i => !i._id)) throw new Error("actors.items.update: items with _id");
+    return (await a.updateEmbeddedDocuments("Item", items)).map(i => i.id);
+  },
+
+  async "actors.items.remove"({ actor, ids }) {
+    const a = await actorFor(actor);
+    const have = (ids ?? []).filter(id => a.items.get(id));
+    if (have.length) await a.deleteEmbeddedDocuments("Item", have);
+    return have.length;
+  },
+
+  async "packs.import"({ pack, ids, folder }) {
+    const p = packFor(pack);
+    const coll = collectionFor(p.documentName);
+    const update = folder ? { folder: await folderId(p.documentName, folder) } : {};
+    const out = [];
+    for (const id of ids ?? []) {
+      const d = await coll.importFromCompendium(p, id, update);
+      out.push({ ...brief(d), source: `Compendium.${p.collection}.${p.documentName}.${id}` });
+    }
+    return out;
+  },
+
+  // Whispered to the GM by default, with a button that shows the message to everyone.
+  async "chat.post"({ text, whisper = "gm", speaker, flavor, share = true }) {
+    if (!String(text ?? "").trim()) throw new Error("chat.post: no text");
+    const data = { content: textHtml(text), flags: { [MOD]: { share: !!(share && whisper) } } };
+    if (flavor) data.flavor = esc(flavor);
+    if (whisper) data.whisper = userIds(whisper);
+    if (speaker) {
+      const a = await actorFor(speaker).catch(() => null);
+      data.speaker = a ? ChatMessage.getSpeaker({ actor: a }) : { alias: String(speaker) };
+    }
+    const m = await ChatMessage.create(data);
+    return { id: m.id };
+  },
+
+  async "tokens.create"({ scene, tokens }) {
+    const sc = await sceneFor(scene);
+    const datas = [];
+    for (const t of tokens ?? []) {
+      const actor = await tokenActor(t.actor);
+      const td = await actor.getTokenDocument(place(sc, t));
+      datas.push(td.toObject());
+    }
+    if (!datas.length) throw new Error("tokens.create: no tokens");
+    return (await sc.createEmbeddedDocuments("Token", datas)).map(t => ({ ...brief(t), actorId: t.actorId }));
+  },
+
+  async "tokens.update"({ scene, tokens }) {
+    const sc = await sceneFor(scene);
+    if (!tokens?.length || tokens.some(t => !t._id)) throw new Error("tokens.update: tokens with _id");
+    return (await sc.updateEmbeddedDocuments("Token", tokens.map(t => place(sc, t)))).map(t => t.id);
+  },
+
+  async "tokens.delete"({ scene, ids }) {
+    const sc = await sceneFor(scene);
+    const have = (ids ?? []).filter(id => sc.tokens.get(id));
+    if (have.length) await sc.deleteEmbeddedDocuments("Token", have);
+    return have.length;
+  },
+
+  async "scenes.activate"({ scene }) {
+    const sc = await sceneFor(scene);
+    await sc.activate();
+    return brief(sc);
+  },
+
+  async "scenes.view"({ scene }) {
+    const sc = await sceneFor(scene);
+    await sc.view();
+    return brief(sc);
+  },
+
+  async "combat.start"({ scene, tokens, roll }) {
+    const sc = await sceneFor(scene);
+    const toks = tokens?.length ? tokens.map(id => sc.tokens.get(id) ?? (() => { throw new Error(`no token ${id} on ${sc.name}`); })())
+      : [...sc.tokens];
+    let c = game.combats.find(x => x.scene?.id === sc.id);
+    if (!c) c = await CONFIG.Combat.documentClass.create({ scene: sc.id, active: true });
+    const have = new Set(c.combatants.map(x => x.tokenId));
+    const add = toks.filter(t => !have.has(t.id)).map(t => ({ tokenId: t.id, sceneId: sc.id, actorId: t.actorId, hidden: t.hidden }));
+    if (add.length) await c.createEmbeddedDocuments("Combatant", add);
+    if (roll === "npc") await c.rollNPC();
+    else if (roll === "all") await c.rollAll();
+    if (!c.started) await c.startCombat();
+    return combatData(c);
+  },
+
+  // Ends without Foundry's confirmation dialog: the script asked for it.
+  async "combat.end"({ scene }) {
+    const sc = scene ? await sceneFor(scene) : null;
+    const cs = game.combats.filter(c => sc ? c.scene?.id === sc.id : c.active);
+    for (const c of cs) await c.delete();
+    return cs.length;
+  },
+
+  async show({ img, journal, page, title, users }) {
+    if (img) {
+      const image = servedPath(img);
+      game.socket.emit("shareImage", { image, title: title ?? "", uuid: null });
+      return { shown: "image", image };
+    }
+    if (!journal) throw new Error("show: img or journal");
+    const j = await docFor("JournalEntry", journal);
+    const target = page ? (j.pages.get(page) ?? j.pages.getName?.(page) ?? j.pages.find(p => p.name === page)
+      ?? (() => { throw new Error(`no page ${page} in ${j.name}`); })()) : j;
+    const J = foundry.documents?.collections?.Journal ?? globalThis.Journal;
+    await J.show(target, { force: true, ...(users?.length ? { users: userIds(users) } : {}) });
+    return { shown: "journal", ...brief(target) };
+  },
+
+  async "ui.open"({ type, id }) {
+    if (type === "Scene") { const sc = await sceneFor(id); await sc.view(); return brief(sc); }
+    const d = await docFor(type, id);
+    d.sheet.render(true);
+    return brief(d);
+  },
+
+  async "world.state"() {
+    const sc = game.scenes.active, vw = game.scenes.viewed, tok = t => ({ id: t.id, name: t.name, actorId: t.document?.actorId ?? t.actorId });
+    return {
+      active: sc ? brief(sc) : null, viewed: vw ? brief(vw) : null,
+      combat: game.combat ? combatData(game.combat) : null,
+      users: game.users.map(u => ({ id: u.id, name: u.name, active: u.active, isGM: u.isGM, character: u.character?.id ?? null })),
+      controlled: (globalThis.canvas?.tokens?.controlled ?? []).map(tok),
+      targets: [...(game.user.targets ?? [])].map(tok),
+      playing: (game.playlists?.playing ?? []).map(brief),
+    };
+  },
+
+  async "playlists.play"({ playlist, sound }) {
+    const pl = await docFor("Playlist", playlist);
+    if (sound) {
+      const s = pl.sounds.get(sound) ?? pl.sounds.getName?.(sound) ?? pl.sounds.find(x => x.name === sound);
+      if (!s) throw new Error(`no sound ${sound} in ${pl.name}`);
+      await pl.playSound(s);
+    } else await pl.playAll();
+    return brief(pl);
+  },
+
+  async "playlists.stop"({ playlist }) {
+    const pls = playlist ? [await docFor("Playlist", playlist)] : [...(game.playlists?.playing ?? [])];
+    for (const pl of pls) await pl.stopAll();
+    return pls.length;
+  },
 };
+
+// --- events: what happens at the table, to the bridge (opt-in, GM's client only) ------------
+
+function chatData(m) {
+  const o = m.toObject();
+  return {
+    id: m.id, author: o.author ?? o.user ?? null, speaker: o.speaker, content: o.content, flavor: o.flavor ?? "",
+    whisper: o.whisper ?? [], blind: !!o.blind, flags: o.flags ?? {}, bridge: !!o.flags?.[MOD],
+    rolls: (m.rolls ?? []).map(r => ({ formula: r.formula, total: r.total,
+      dice: (r.dice ?? []).map(d => ({ faces: d.faces, results: d.results.map(x => x.result) })) })),
+  };
+}
+
+const Events = {
+  send(kind, data) {
+    const ws = Bridge.ws;
+    if (!Bridge.ready || ws?.readyState !== WebSocket.OPEN || !game.settings.get(MOD, "events")) return;
+    try {
+      ws.send(JSON.stringify({ type: "event", event: { kind, at: Date.now(), scene: game.scenes?.viewed?.id ?? null, ...data } }));
+    } catch (e) { console.warn(`${MOD} | event ${kind}`, e); }
+  },
+  hook() {
+    const ev = (name, fn) => Hooks.on(name, (...a) => { try { fn(...a); } catch (e) { console.warn(`${MOD} | ${name}`, e); } });
+    ev("createChatMessage", m => this.send("chat", chatData(m)));
+    ev("updateChatMessage", m => this.send("chat.update", chatData(m)));          // opposed tests finish later
+    ev("combatStart", c => this.send("combat", combatData(c)));
+    ev("updateCombat", (c, ch) => { if ("turn" in ch || "round" in ch) this.send("combat", combatData(c)); });
+    ev("deleteCombat", c => this.send("combat.end", { id: c.id }));
+    ev("canvasReady", cv => cv.scene && this.send("scene", brief(cv.scene)));
+    ev("targetToken", (u, t, on) => this.send("target", { user: u.id, token: t.id, actor: t.document.actorId, name: t.name, targeted: on }));
+    ev("controlToken", (t, on) => this.send("control", { token: t.id, actor: t.document.actorId, name: t.name, controlled: on }));
+    ev("updateActor", (a, ch) => this.send("actor", { id: a.id, name: a.name, token: a.token?.id ?? null, changes: ch }));
+    ev("updateToken", (t, ch) => {                                                 // unlinked actors change through their token
+      if ("delta" in ch || "actorData" in ch || "hidden" in ch) this.send("token", { id: t.id, name: t.name, actor: t.actorId, changes: ch });
+    });
+    ev("createItem", i => i.parent?.documentName === "Actor" && this.send("item.create", { actor: i.parent.id, ...brief(i), type: i.type }));
+    ev("deleteItem", i => i.parent?.documentName === "Actor" && this.send("item.delete", { actor: i.parent.id, ...brief(i), type: i.type }));
+  },
+};
+
+// "Show everyone" on a message a script whispered to the GM.
+function shareButton(message, html) {
+  if (!game.user.isGM || !message.getFlag(MOD, "share") || !message.whisper?.length) return;
+  const el = html instanceof HTMLElement ? html : html?.[0];
+  if (!el || el.querySelector(".foundry-bridge-share")) return;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "foundry-bridge-share";
+  b.textContent = game.i18n?.lang === "pl" ? "Pokaż wszystkim" : "Show everyone";
+  b.addEventListener("click", async () => {
+    await ChatMessage.create({ content: message.content, flavor: message.flavor, speaker: message.speaker, flags: { [MOD]: { shared: message.id } } });
+    await message.setFlag(MOD, "share", false);
+  });
+  (el.querySelector(".message-content") ?? el).append(b);
+}
 
 // --- connection ----------------------------------------------------------------------------
 
@@ -176,7 +490,7 @@ function info() {
 }
 
 const Bridge = {
-  ws: null, retry: 2000, timer: null, announced: false,
+  ws: null, retry: 2000, timer: null, announced: false, ready: false,
 
   start() {
     this.stop();
@@ -186,6 +500,7 @@ const Bridge = {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return this.later(); }
     this.ws = ws;
+    this.ready = false;
     ws.onopen = () => ws.send(JSON.stringify({ type: "hello", key, info: info() }));
     ws.onmessage = ev => this.handle(ws, ev.data);
     ws.onclose = ev => {
@@ -217,6 +532,7 @@ const Bridge = {
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg.type === "welcome") {
       this.retry = 2000;
+      this.ready = true;
       this.announced = true;
       return ui.notifications.info(`${MOD}: connected to the bridge`);
     }
@@ -248,10 +564,17 @@ Hooks.once("init", () => {
     name: "Bridge key", hint: "From `foundry-bridge key --copy`. Stored in this browser only.",
     scope: "client", config: true, type: String, default: "", onChange: restart,
   });
+  game.settings.register(MOD, "events", {
+    name: "Send table events to the bridge",
+    hint: "Chat messages with rolls, combat turns, scene changes, targets and actor changes go to local scripts (e.g. descriptions of hits). This browser only.",
+    scope: "client", config: true, type: Boolean, default: false,
+  });
   game.settings.register(MOD, "roots", {
     name: "Folders scripts may upload into", hint: "Comma-separated top-level folders of Data/.",
     scope: "world", config: true, type: String, default: "rpg-maps, bridge",
   });
 });
 
-Hooks.once("ready", () => Bridge.start());
+Hooks.once("ready", () => { Events.hook(); Bridge.start(); });
+Hooks.on("renderChatMessageHTML", shareButton);                                  // v13
+Hooks.on("renderChatMessage", (m, html) => { if ((game.release?.generation ?? 12) < 13) shareButton(m, html); });   // v12

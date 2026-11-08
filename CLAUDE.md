@@ -1,6 +1,7 @@
 # CLAUDE.md — foundry-bridge
 
-Most między lokalnymi skryptami a otwartym światem FoundryVTT. Opis, API i bezpieczeństwo:
+Most między lokalnymi skryptami a otwartym światem FoundryVTT (w obie strony: operacje i zdarzenia stołu).
+Opis, API i bezpieczeństwo:
 `README.md`. Klienci: `../rpg-maps` (`rpgmaps push`), wkrótce generatory aktorów/przedmiotów.
 
 - `src/foundry_bridge/` — `server.py` (aiohttp: HTTP dla skryptów, WS dla modułu),

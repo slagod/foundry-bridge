@@ -5,6 +5,12 @@
 The module connects out to the bridge (a Foundry module can't listen on anything), sends
 `hello` with the key, then executes the operations it receives. One module connection at a
 time: a new one replaces the old (e.g. the GM reloaded the page).
+
+When the GM turns events on in the module, it also sends what happens at the table (chat
+messages with rolls, combat turns, scene changes, targets, actor changes) as `{type: "event"}`.
+The bridge keeps the latest ones numbered; scripts read them with `GET /events?since=N`
+(long-poll). The bridge passes them on as they are: what a roll means is the game system's
+business, not the bridge's.
 """
 from __future__ import annotations
 
@@ -13,6 +19,9 @@ import hmac
 import itertools
 import json
 import logging
+import secrets
+import time
+from collections import deque
 
 from aiohttp import WSMsgType, web
 
@@ -21,6 +30,8 @@ from . import OPS, __version__
 log = logging.getLogger("foundry-bridge")
 
 MAX_MSG = 256 * 1024 * 1024  # base64 maps and portraits travel over the socket
+KEEP_EVENTS = 5000
+MAX_WAIT = 60.0
 
 
 class NotConnected(Exception):
@@ -39,6 +50,18 @@ class Bridge:
         self.info: dict | None = None
         self.pending: dict[int, asyncio.Future] = {}
         self.ids = itertools.count(1)
+        self.events: deque[dict] = deque(maxlen=KEEP_EVENTS)
+        self.seq = 0
+        self.boot = secrets.token_hex(4)          # numbering starts over when the bridge restarts
+        self.new_event = asyncio.Event()
+
+    def add_event(self, ev: dict) -> dict:
+        self.seq += 1
+        e = {**ev, "seq": self.seq, "received": time.time()}
+        self.events.append(e)
+        self.new_event.set()
+        self.new_event = asyncio.Event()
+        return e
 
     # --- auth -----------------------------------------------------------------
     def _authorized(self, request: web.Request) -> bool:
@@ -69,6 +92,9 @@ class Bridge:
                 try:
                     data = json.loads(msg.data)
                 except ValueError:
+                    continue
+                if data.get("type") == "event" and isinstance(data.get("event"), dict):
+                    self.add_event(data["event"])
                     continue
                 fut = self.pending.pop(data.get("id"), None)
                 if fut and not fut.done():
@@ -118,6 +144,26 @@ class Bridge:
             return web.json_response({"error": "unauthorized"}, status=401)
         return web.json_response({"bridge": __version__, "connected": self.ws is not None, "foundry": self.info})
 
+    async def events_handler(self, request: web.Request) -> web.Response:
+        """Events after `since`; with `wait` (s), waits for the first one when there are none yet."""
+        if not self._authorized(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        try:
+            since = int(request.query.get("since", 0))
+            wait = min(MAX_WAIT, max(0.0, float(request.query.get("wait", 0))))
+        except ValueError:
+            return web.json_response({"error": "since and wait must be numbers"}, status=400)
+        if request.query.get("boot") not in (None, "", self.boot):
+            since = 0                                   # the client numbered events of an earlier bridge
+        if wait and not any(e["seq"] > since for e in self.events):
+            try:
+                await asyncio.wait_for(self.new_event.wait(), wait)
+            except asyncio.TimeoutError:
+                pass
+        out = [e for e in self.events if e["seq"] > since]
+        return web.json_response({"events": out, "last": self.seq, "boot": self.boot,
+                                  "connected": self.ws is not None})
+
     async def rpc(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"error": "unauthorized"}, status=401)
@@ -151,6 +197,7 @@ def make_app(key: str, timeout: float = 120.0) -> web.Application:
     app.add_routes([
         web.get("/ws", bridge.ws_handler),
         web.get("/status", bridge.status),
+        web.get("/events", bridge.events_handler),
         web.post("/rpc", bridge.rpc),
         web.post("/batch", bridge.batch),
     ])

@@ -16,7 +16,9 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -109,3 +111,102 @@ class Bridge:
         """A file served by Foundry (e.g. an actor's img), as (bytes, mime)."""
         r = self.call("files.fetch", path=path)
         return base64.b64decode(r["b64"]), r.get("mime")
+
+    # --- at the table ---------------------------------------------------------
+    def events(self, since: int = 0, wait: float = 0, boot: str | None = None) -> dict:
+        """Events after `since`: {events, last, boot, connected}; `wait` s long-poll when there are none."""
+        q = {"since": since, "wait": wait} | ({"boot": boot} if boot else {})
+        return self._req("GET", "/events?" + urllib.parse.urlencode(q))
+
+    def listen(self, since: int | None = None, wait: float = 25):
+        """Events one by one as they come, forever; `since` None starts with what happens from now on."""
+        boot = None
+        if since is None:
+            r = self.events()
+            since, boot = r["last"], r["boot"]
+        while True:
+            try:
+                r = self.events(since, wait, boot)
+            except BridgeError as e:
+                if e.status:                       # a real refusal (key), not a bridge being restarted
+                    raise
+                time.sleep(2)
+                continue
+            if boot and r["boot"] != boot:
+                since = 0
+            boot = r["boot"]
+            for e in r["events"]:
+                if e["seq"] > since:
+                    yield e
+            since = r["last"]
+
+    def say(self, text: str, whisper: str | list[str] | None = "gm", speaker: str | None = None,
+            flavor: str | None = None, share: bool = True) -> dict:
+        """A message in the chat (plain text, **bold**, *italic*); by default whispered to the GM with a button
+        to show it to everyone."""
+        args = {"text": text, "whisper": whisper, "share": share} | ({"speaker": speaker} if speaker else {}) \
+            | ({"flavor": flavor} if flavor else {})
+        return self.call("chat.post", **args)
+
+    def add_tokens(self, scene: str, tokens: list[dict]) -> list[dict]:
+        """Tokens of actors (`actor`: id, bridge key or uuid, compendium too) at `x`, `y` (px, or grid cells with
+        `grid: true`), optionally `hidden`, `disposition` (-1 hostile, 0 neutral, 1 friendly), `name`."""
+        return self.call("tokens.create", scene=scene, tokens=tokens)
+
+    def update_tokens(self, scene: str, tokens: list[dict]) -> list[str]:
+        return self.call("tokens.update", scene=scene, tokens=tokens)
+
+    def remove_tokens(self, scene: str, ids: list[str]) -> int:
+        return self.call("tokens.delete", scene=scene, ids=ids)
+
+    def import_pack(self, pack: str, ids: list[str], folder: str | None = None) -> list[dict]:
+        """Compendium documents copied into the world: [{id, uuid, name, source}]."""
+        return self.call("packs.import", pack=pack, ids=ids, **({"folder": folder} if folder else {}))
+
+    def activate(self, scene: str) -> dict:
+        return self.call("scenes.activate", scene=scene)
+
+    def view(self, scene: str) -> dict:
+        return self.call("scenes.view", scene=scene)
+
+    def start_combat(self, scene: str, tokens: list[str] | None = None, roll: str | None = None) -> dict:
+        """Combat on the scene with the given tokens (all when None); `roll`: "npc" or "all" initiative."""
+        return self.call("combat.start", scene=scene, **({"tokens": tokens} if tokens else {}), **({"roll": roll} if roll else {}))
+
+    def end_combat(self, scene: str | None = None) -> int:
+        return self.call("combat.end", **({"scene": scene} if scene else {}))
+
+    def show(self, img: str | None = None, journal: str | None = None, page: str | None = None,
+             title: str | None = None, users: list[str] | None = None) -> dict:
+        """A picture (path served by Foundry) or a journal (page) shown to the players."""
+        args = {k: v for k, v in {"img": img, "journal": journal, "page": page, "title": title, "users": users}.items() if v}
+        return self.call("show", **args)
+
+    def open(self, type: str, id: str) -> dict:
+        """Opens a document's sheet on the GM's screen (a scene: views it)."""
+        return self.call("ui.open", type=type, id=id)
+
+    def state(self) -> dict:
+        """Active and viewed scene, combat, users with their characters, the GM's controlled and targeted tokens."""
+        return self.call("world.state")
+
+    def play(self, playlist: str, sound: str | None = None) -> dict:
+        return self.call("playlists.play", playlist=playlist, **({"sound": sound} if sound else {}))
+
+    def stop(self, playlist: str | None = None) -> int:
+        return self.call("playlists.stop", **({"playlist": playlist} if playlist else {}))
+
+    def update(self, type: str, id: str, data: dict) -> dict:
+        """Changes fields of an existing world Actor or Item by id (not its embedded items: actor_items_*)."""
+        return self.call("documents.update", type=type, id=id, data=data)
+
+    def give(self, actor: str, items: list[dict | str]) -> list[dict]:
+        """Items for an actor (id, bridge key, or a token's uuid for an unlinked one): item data or the uuid of an
+        item in a compendium or in the world. The rest of the inventory stays."""
+        return self.call("actors.items.add", actor=actor, items=items)
+
+    def update_items(self, actor: str, items: list[dict]) -> list[str]:
+        return self.call("actors.items.update", actor=actor, items=items)
+
+    def take(self, actor: str, ids: list[str]) -> int:
+        return self.call("actors.items.remove", actor=actor, ids=ids)

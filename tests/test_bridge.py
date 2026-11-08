@@ -109,6 +109,23 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e.exception.status, 502)
         self.assertEqual(len(self.calls), 2)
 
+    async def test_events_from_the_module(self):
+        ws, _ = await self.fake_module()
+        first = await self.run_client(self.client.events)
+        self.assertEqual((first["events"], first["last"]), ([], 0))
+        waiting = asyncio.create_task(self.run_client(self.client.events, 0, 5))
+        await asyncio.sleep(0.2)
+        await ws.send_json({"type": "event", "event": {"kind": "chat", "content": "hit"}})
+        got = await waiting
+        self.assertEqual([(e["seq"], e["kind"]) for e in got["events"]], [(1, "chat")])
+        self.assertEqual(self.calls, [])                                       # an event is not a reply
+        await ws.send_json({"type": "event", "event": {"kind": "combat"}})
+        await asyncio.sleep(0.1)
+        later = await self.run_client(self.client.events, 1)
+        self.assertEqual([e["kind"] for e in later["events"]], ["combat"])
+        again = await self.run_client(self.client.events, 2, 0, "other-boot")  # numbers of an earlier bridge
+        self.assertEqual(len(again["events"]), 2)
+
     async def test_new_connection_replaces_old(self):
         old, _ = await self.fake_module()
         await self.fake_module()
@@ -158,7 +175,7 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
 
     async def test_packs_list_and_export(self):
         packs = await self.run_client(self.client.packs)
-        self.assertEqual([p["id"] for p in packs], ["wfrp4e-core.items"])  # Macro pack hidden
+        self.assertEqual([p["id"] for p in packs], ["wfrp4e-core.items", "wfrp4e-core.bestiary"])  # Macro pack hidden
         self.assertEqual(packs[0]["size"], 2)
         items = await self.run_client(self.client.export_pack, "wfrp4e-core.items")
         self.assertEqual({i["name"] for i in items}, {"Dagger", "Sword"})
@@ -176,6 +193,74 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
         for bad in (("Scene", a["id"], "x.webp"), ("Actor", "nope", "x.webp"), ("Actor", a["id"], "https://evil/x.png")):
             with self.assertRaises(BridgeError):
                 await self.run_client(self.client.set_images, *bad)
+
+    async def test_chat_is_text_whispered_to_the_gm_and_heard_as_an_event(self):
+        r = await self.run_client(self.client.say, "Cios w **głowę**\n<img src=x onerror=alert(1)>")
+        ev = (await self.run_client(self.client.events))["events"]
+        chat = [e for e in ev if e["kind"] == "chat"]
+        self.assertEqual(chat[-1]["id"], r["id"])
+        self.assertEqual(chat[-1]["whisper"], ["gm1"])
+        self.assertTrue(chat[-1]["bridge"] and chat[-1]["flags"]["foundry-bridge"]["share"])
+        self.assertIn("<strong>głowę</strong>", chat[-1]["content"])
+        self.assertNotIn("<img", chat[-1]["content"])
+        await self.run_client(self.client.say, "Wszyscy", whisper=None, speaker="Narrator")
+        last = [e for e in (await self.run_client(self.client.events))["events"] if e["kind"] == "chat"][-1]
+        self.assertEqual((last["whisper"], last["speaker"]), ([], {"alias": "Narrator"}))
+
+    async def test_tokens_combat_and_state(self):
+        sc = await self.run_client(self.client.upsert, "Scene", "t:s", {"name": "Obóz"})
+        await self.run_client(self.client.upsert, "Actor", "t:hero", {"name": "Etelka"})
+        gob = "Compendium.wfrp4e-core.bestiary.Actor.Goblin"
+        made = await self.run_client(self.client.add_tokens, "t:s", [
+            {"actor": "t:hero", "x": 2, "y": 3, "grid": True},
+            {"actor": gob, "x": 10, "y": 0, "hidden": True, "disposition": -1},
+            {"actor": gob, "x": 11, "y": 0, "hidden": True, "disposition": -1}])
+        self.assertEqual([m["name"] for m in made], ["Etelka", "Goblin", "Goblin"])
+        actors = await self.run_client(self.client.get, "Actor")
+        self.assertEqual(sorted(a["name"] for a in actors), ["Etelka", "Goblin"])      # imported once
+        toks = (await self.run_client(self.client.get, "Scene", ids=[sc["id"]]))[0]["tokens"]
+        self.assertEqual([(t["x"], t["y"]) for t in toks], [(300, 350), (110, 50), (111, 50)])
+        await self.run_client(self.client.update_tokens, "t:s", [{"_id": made[1]["id"], "hidden": False}])
+        self.assertEqual(await self.run_client(self.client.remove_tokens, "t:s", [made[2]["id"], "nope"]), 1)
+        await self.run_client(self.client.activate, "t:s")
+        c = await self.run_client(self.client.start_combat, "t:s", None, "npc")
+        self.assertEqual((c["round"], len(c["order"])), (1, 2))
+        st = await self.run_client(self.client.state)
+        self.assertEqual((st["active"]["name"], st["combat"]["id"]), ("Obóz", c["id"]))
+        self.assertEqual([u["name"] for u in st["users"]], ["Gamemaster", "Ania"])
+        self.assertIn("combat", [e["kind"] for e in (await self.run_client(self.client.events))["events"]])
+        self.assertEqual(await self.run_client(self.client.end_combat, "t:s"), 1)
+
+    async def test_items_of_an_actor(self):
+        a = await self.run_client(self.client.upsert, "Actor", "t:c", {"name": "Hans", "items": [{"name": "Dagger"}]})
+        got = await self.run_client(self.client.give, "t:c", ["Compendium.wfrp4e-core.items.Item.Sword", {"name": "Rope"}])
+        self.assertEqual([g["name"] for g in got], ["Sword", "Rope"])
+        items = (await self.run_client(self.client.get, "Actor", ids=[a["id"]]))[0]["items"]
+        self.assertEqual([i["name"] for i in items], ["Dagger", "Sword", "Rope"])
+        await self.run_client(self.client.update_items, a["id"], [{"_id": got[1]["id"], "system": {"quantity": 2}}])
+        self.assertEqual(await self.run_client(self.client.take, a["id"], [got[0]["id"]]), 1)
+        await self.run_client(self.client.update, "Actor", a["id"], {"system": {"wounds": 3}})
+        hans = (await self.run_client(self.client.get, "Actor", ids=[a["id"]]))[0]
+        self.assertEqual([i["name"] for i in hans["items"]], ["Dagger", "Rope"])
+        self.assertEqual((hans["items"][1]["system"], hans["system"]), ({"quantity": 2}, {"wounds": 3}))
+        for bad in (("Actor", a["id"], {"items": []}), ("Scene", a["id"], {"name": "x"}), ("Actor", "nope", {"name": "x"})):
+            with self.assertRaises(BridgeError):
+                await self.run_client(self.client.update, *bad)
+
+    async def test_import_show_open_and_music(self):
+        gob = (await self.run_client(self.client.export_pack, "wfrp4e-core.bestiary"))[0]
+        r = await self.run_client(self.client.import_pack, "wfrp4e-core.bestiary", [gob["_id"]], "Wrogowie")
+        self.assertEqual((r[0]["name"], r[0]["source"]), ("Goblin", f"Compendium.wfrp4e-core.bestiary.Actor.{gob['_id']}"))
+        self.assertEqual((await self.run_client(self.client.show, img="bridge/studio/x.webp"))["shown"], "image")
+        with self.assertRaises(BridgeError):
+            await self.run_client(self.client.show, img="https://evil.example/x.png")
+        await self.run_client(self.client.upsert, "JournalEntry", "t:j", {"name": "List", "pages": [{"name": "Strona"}]})
+        self.assertEqual((await self.run_client(self.client.show, journal="t:j", page="Strona"))["name"], "Strona")
+        self.assertEqual((await self.run_client(self.client.open, "Actor", r[0]["id"]))["name"], "Goblin")
+        await self.run_client(self.client.upsert, "Playlist", "t:p", {"name": "Las", "sounds": [{"name": "Deszcz"}]})
+        await self.run_client(self.client.play, "t:p", "Deszcz")
+        self.assertEqual([p["name"] for p in (await self.run_client(self.client.state))["playing"]], ["Las"])
+        self.assertEqual(await self.run_client(self.client.stop), 1)
 
     async def test_fetch_file_only_relative_paths(self):
         data, mime = await self.run_client(self.client.fetch_file, "worlds/fake/portrait.webp")

@@ -1,5 +1,5 @@
-// Foundry Bridge — the GM's browser connects to a local bridge and runs the operations it sends.
-// The module only connects for a GM who enabled it in their own client settings.
+// Foundry Bridge operations — the GM's browser connects to a local bridge and runs the operations it sends.
+// Loaded by loader.js; connects only for a GM who enabled it in their own client settings.
 const MOD = "foundry-bridge";
 
 // Document types scripts may create/update. No Macro: a macro is arbitrary code.
@@ -133,6 +133,18 @@ function userIds(who) {
 
 const brief = d => ({ id: d.id, uuid: d.uuid, name: d.name });
 
+async function parentFor(parent) {
+  const { type, id } = parent ?? {};
+  return type === "Actor" ? actorFor(id) : docFor(type, id);
+}
+
+// The field an embedded collection lives in (Token → tokens); only names the parent's class declares.
+function embeddedName(doc, name) {
+  const emb = doc.constructor.metadata?.embedded ?? {};
+  if (!(name in emb)) throw new Error(`${doc.documentName}: no embedded ${name} (has: ${Object.keys(emb).join(", ")})`);
+  return emb[name];
+}
+
 function combatData(c) {
   return {
     id: c.id, scene: c.scene?.id ?? null, round: c.round, turn: c.turn, started: !!c.started,
@@ -247,14 +259,47 @@ const OPS = {
   // Fields of an existing world Actor or Item (also ones the bridge did not create). Embedded documents
   // (an actor's items, effects) go through actors.items.*: sending them here would replace the whole list.
   async "documents.update"({ type, id, data }) {
-    if (!["Actor", "Item"].includes(type)) throw new Error(`documents.update: Actor or Item, not ${type}`);
-    const doc = await docFor(type, id);
+    const doc = type === "Actor" ? await actorFor(id) : await docFor(type, id);
     const embedded = Object.values(doc.constructor.metadata?.embedded ?? {});
     const bad = Object.keys(data ?? {}).filter(k => embedded.includes(k) || k === "_id");
-    if (bad.length) throw new Error(`documents.update: ${bad.join(", ")} can't be set here (items: actors.items.*)`);
+    if (bad.length) throw new Error(`documents.update: ${bad.join(", ")} can't be set here (embedded.*)`);
     if (!Object.keys(data ?? {}).length) throw new Error("documents.update: nothing to set");
     await doc.update(data);
     return brief(doc);
+  },
+
+  // Embedded documents of any allowed parent (an actor's items and effects, a scene's tokens, walls, lights, notes,
+  // a journal's pages…) one by one; the others stay. parent: {type, id} with id, bridge key or uuid.
+  async "embedded.create"({ parent, name, data }) {
+    const p = await parentFor(parent);
+    embeddedName(p, name);
+    if (!data?.length) throw new Error("embedded.create: no data");
+    return (await p.createEmbeddedDocuments(name, data)).map(brief);
+  },
+
+  async "embedded.update"({ parent, name, data }) {
+    const p = await parentFor(parent);
+    embeddedName(p, name);
+    if (!data?.length || data.some(d => !d._id)) throw new Error("embedded.update: data with _id");
+    return (await p.updateEmbeddedDocuments(name, data)).map(d => d.id);
+  },
+
+  async "embedded.delete"({ parent, name, ids }) {
+    const p = await parentFor(parent);
+    const field = embeddedName(p, name), have = (ids ?? []).filter(id => p[field]?.get?.(id) ?? p.getEmbeddedCollection(name).get?.(id));
+    if (have.length) await p.deleteEmbeddedDocuments(name, have);
+    return have.length;
+  },
+
+  // The GM's view to a point of the viewed scene (px from the map's corner, or cells with grid: true);
+  // pull: the players' views follow (Foundry's ping with pull).
+  async "canvas.pan"({ x, y, grid, scale, pull = true }) {
+    const sc = game.scenes.viewed;
+    if (!sc || !globalThis.canvas?.ready) throw new Error("no scene on the GM's canvas");
+    const pt = place(sc, { x, y, grid });
+    await canvas.animatePan({ x: pt.x, y: pt.y, ...(scale ? { scale } : {}) });
+    if (pull) await canvas.ping({ x: pt.x, y: pt.y }, { pull: true });
+    return { x: pt.x, y: pt.y, scene: sc.id };
   },
 
   // Items for an actor: item data, or the uuid of an item in a compendium or the world (copied).
@@ -491,6 +536,7 @@ function info() {
     world: game.world.id, title: game.world.title,
     system: game.system.id, systemVersion: game.system.version,
     foundry: game.version, user: game.user.name, isGM: game.user.isGM,
+    module: game.modules?.get?.(MOD)?.version ?? null, code: SOURCE,
   };
 }
 
@@ -555,31 +601,17 @@ const Bridge = {
   },
 };
 
-Hooks.once("init", () => {
-  const restart = () => game.ready && Bridge.start();
-  game.settings.register(MOD, "enabled", {
-    name: "Connect to the bridge", hint: "Only this browser, only for a GM. Leave off on machines without the bridge.",
-    scope: "client", config: true, type: Boolean, default: false, onChange: restart,
-  });
-  game.settings.register(MOD, "url", {
-    name: "Bridge URL", scope: "client", config: true, type: String,
-    default: "ws://127.0.0.1:8765/ws", onChange: restart,
-  });
-  game.settings.register(MOD, "key", {
-    name: "Bridge key", hint: "From `foundry-bridge key --copy`. Stored in this browser only.",
-    scope: "client", config: true, type: String, default: "", onChange: restart,
-  });
-  game.settings.register(MOD, "events", {
-    name: "Send table events to the bridge",
-    hint: "Chat messages with rolls, combat turns, scene changes, targets and actor changes go to local scripts (e.g. descriptions of hits). This browser only.",
-    scope: "client", config: true, type: Boolean, default: false,
-  });
-  game.settings.register(MOD, "roots", {
-    name: "Folders scripts may upload into", hint: "Comma-separated top-level folders of Data/.",
-    scope: "world", config: true, type: String, default: "rpg-maps, bridge",
-  });
-});
+// Started by loader.js, with the code of this module's release or (development) the one the bridge sent.
+let SOURCE = "module";
 
-Hooks.once("ready", () => { Events.hook(); Bridge.start(); });
-Hooks.on("renderChatMessageHTML", shareButton);                                  // v13
-Hooks.on("renderChatMessage", (m, html) => { if ((game.release?.generation ?? 12) < 13) shareButton(m, html); });   // v12
+export function start(source) {
+  SOURCE = source;
+  Events.hook();
+  Hooks.on("renderChatMessageHTML", shareButton);                                // v13
+  Hooks.on("renderChatMessage", (m, html) => { if ((game.release?.generation ?? 12) < 13) shareButton(m, html); });   // v12
+  Bridge.start();
+}
+
+export function restart() {
+  if (game.ready) Bridge.start();
+}

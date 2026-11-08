@@ -22,6 +22,7 @@ import logging
 import secrets
 import time
 from collections import deque
+from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
@@ -30,6 +31,8 @@ from . import OPS, __version__
 log = logging.getLogger("foundry-bridge")
 
 MAX_MSG = 256 * 1024 * 1024  # base64 maps and portraits travel over the socket
+# The operations code the module's loader may ask for ("Load operations from the bridge"): this checkout's.
+MODULE_JS = Path(__file__).resolve().parents[2] / "module" / "scripts" / "bridge.js"
 KEEP_EVENTS = 5000
 MAX_WAIT = 60.0
 
@@ -78,6 +81,14 @@ class Bridge:
             hello = {}
         if hello.get("type") != "hello" or not hmac.compare_digest(str(hello.get("key", "")), self.key):
             await ws.close(code=4401, message=b"bad key")
+            return ws
+        if hello.get("want") == "code":                 # the loader's short visit, not the module's connection
+            if not MODULE_JS.is_file():
+                await ws.close(code=4404, message=b"no module code next to this bridge")
+                return ws
+            await ws.send_json({"type": "code", "version": __version__, "source": MODULE_JS.read_text(encoding="utf-8")})
+            await ws.close()
+            log.info("sent the module code (%s)", __version__)
             return ws
 
         if self.ws is not None and not self.ws.closed:

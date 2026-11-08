@@ -35,4 +35,8 @@ OPS = frozenset({
     "world.state",
     "playlists.play",
     "playlists.stop",
+    "embedded.create",
+    "embedded.update",
+    "embedded.delete",
+    "canvas.pan",
 })

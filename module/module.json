@@ -5,7 +5,7 @@
   "version": "0.3.2",
   "authors": [{ "name": "Sebastian" }],
   "compatibility": { "minimum": "12", "verified": "13" },
-  "esmodules": ["scripts/bridge.js"],
+  "esmodules": ["scripts/loader.js"],
   "url": "https://github.com/slagod/foundry-bridge",
   "manifest": "https://github.com/slagod/foundry-bridge/releases/latest/download/module.json",
   "download": "https://github.com/slagod/foundry-bridge/releases/latest/download/module.zip"

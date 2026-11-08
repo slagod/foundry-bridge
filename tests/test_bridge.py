@@ -126,6 +126,21 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
         again = await self.run_client(self.client.events, 2, 0, "other-boot")  # numbers of an earlier bridge
         self.assertEqual(len(again["events"]), 2)
 
+    async def test_loader_gets_the_code_with_the_key_only(self):
+        main, _ = await self.fake_module()
+        ws = await self.session.ws_connect(f"http://127.0.0.1:{self.port}/ws")
+        await ws.send_json({"type": "hello", "key": KEY, "want": "code"})
+        m = await ws.receive_json()
+        self.assertEqual(m["type"], "code")
+        self.assertIn("export function start", m["source"])
+        bad = await self.session.ws_connect(f"http://127.0.0.1:{self.port}/ws")
+        await bad.send_json({"type": "hello", "key": "nope", "want": "code"})
+        await bad.receive()
+        self.assertEqual(bad.close_code, 4401)
+        await ws.close(); await bad.close()
+        st = await self.run_client(self.client.status)
+        self.assertTrue(st["connected"] and not main.closed)              # the visit didn't replace the module
+
     async def test_new_connection_replaces_old(self):
         old, _ = await self.fake_module()
         await self.fake_module()
@@ -138,6 +153,7 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
     """The real module/scripts/bridge.js on the fake Foundry API (tests/fake-foundry.mjs)."""
+    ENV: dict = {}
 
     async def asyncSetUp(self):
         self.runner = web.AppRunner(make_app(KEY, timeout=5))
@@ -148,7 +164,7 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
         self.client = Client(url=f"http://127.0.0.1:{port}", key=KEY)
         fake = Path(__file__).with_name("fake-foundry.mjs")
         self.node = await asyncio.create_subprocess_exec(
-            "node", str(fake), f"ws://127.0.0.1:{port}/ws", env={**os.environ, "FOUNDRY_BRIDGE_KEY": KEY},
+            "node", str(fake), f"ws://127.0.0.1:{port}/ws", env={**os.environ, "FOUNDRY_BRIDGE_KEY": KEY, **self.ENV},
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         for _ in range(50):
             if (await asyncio.to_thread(self.client.status))["connected"]:
@@ -263,6 +279,32 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p["name"] for p in (await self.run_client(self.client.state))["playing"]], ["Las"])
         self.assertEqual(await self.run_client(self.client.stop), 1)
 
+    async def test_code_from_the_release(self):
+        st = await self.run_client(self.client.status)
+        self.assertEqual(st["foundry"]["code"], "module")
+
+    async def test_embedded_of_any_parent_and_update_of_any_type(self):
+        sc = await self.run_client(self.client.upsert, "Scene", "t:e", {"name": "Loch", "walls": [{"c": [0, 0, 1, 1]}]})
+        w = await self.run_client(self.client.embedded_create, "Scene", "t:e", "Wall", [{"c": [0, 0, 100, 0]}, {"c": [0, 0, 0, 100]}])
+        await self.run_client(self.client.embedded_update, "Scene", sc["id"], "Wall", [{"_id": w[0]["id"], "door": 1}])
+        self.assertEqual(await self.run_client(self.client.embedded_delete, "Scene", "t:e", "Wall", [w[1]["id"], "nope"]), 1)
+        walls = (await self.run_client(self.client.get, "Scene", ids=[sc["id"]]))[0]["walls"]
+        self.assertEqual([x.get("door") for x in walls], [None, 1])                      # the first one stayed
+        with self.assertRaises(BridgeError) as e:
+            await self.run_client(self.client.embedded_create, "Scene", "t:e", "Macro", [{}])
+        self.assertIn("no embedded Macro", str(e.exception))
+        await self.run_client(self.client.update, "Scene", "t:e", {"name": "Loch (noc)"})
+        self.assertEqual((await self.run_client(self.client.get, "Scene", ids=[sc["id"]]))[0]["name"], "Loch (noc)")
+        a = await self.run_client(self.client.upsert, "Actor", "t:fx", {"name": "Ork"})
+        fx = await self.run_client(self.client.embedded_create, "Actor", a["id"], "ActiveEffect", [{"name": "Krwawienie"}])
+        self.assertEqual(fx[0]["name"], "Krwawienie")
+
+    async def test_pan_on_the_viewed_scene(self):
+        await self.run_client(self.client.upsert, "Scene", "t:pan", {"name": "Most"})
+        await self.run_client(self.client.view, "t:pan")
+        r = await self.run_client(self.client.pan, 4, 2, True)
+        self.assertEqual((r["x"], r["y"]), (500, 250))
+
     async def test_fetch_file_only_relative_paths(self):
         data, mime = await self.run_client(self.client.fetch_file, "worlds/fake/portrait.webp")
         self.assertEqual(data, b"\x01\x02\x03")
@@ -270,6 +312,16 @@ class ModuleE2ETest(unittest.IsolatedAsyncioTestCase):
         for bad in ("https://evil.example/x.png", "worlds/../../etc/passwd", "data:text/plain,hi"):
             with self.assertRaises(BridgeError):
                 await self.run_client(self.client.fetch_file, bad)
+
+
+
+class DevLoadE2ETest(ModuleE2ETest):
+    """The same, with the loader taking the operations from the bridge (\"Load operations from the bridge\")."""
+    ENV = {"FAKE_DEVLOAD": "1"}
+
+    async def test_code_from_the_release(self):
+        st = await self.run_client(self.client.status)
+        self.assertTrue(st["foundry"]["code"].startswith("bridge "))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ const hooks = {};
 const settings = new Map([
   ["foundry-bridge.enabled", true], ["foundry-bridge.url", URL_],
   ["foundry-bridge.key", process.env.FOUNDRY_BRIDGE_KEY], ["foundry-bridge.roots", "rpg-maps, bridge"],
-  ["foundry-bridge.events", true],
+  ["foundry-bridge.events", true], ["foundry-bridge.devLoad", !!process.env.FAKE_DEVLOAD],
 ]);
 const files = new Map();                 // path -> bytes
 const dirs = new Set([""]);
@@ -205,9 +205,14 @@ globalThis.FilePicker = {
   },
 };
 
-await import(new URL("../module/scripts/bridge.js", import.meta.url));
+globalThis.canvas = {
+  ready: true, tokens: { controlled: [] },
+  animatePan: async o => shared.push({ pan: o }), ping: async (o, opts) => shared.push({ ping: o, opts }),
+};
+game.modules = new Map([["foundry-bridge", { version: "test" }]]);
+await import(new URL("../module/scripts/loader.js", import.meta.url));
 hooks.init();
-hooks.ready();
+await hooks.ready();
 
 const dump = () => {
   const out = { files: Object.fromEntries([...files].map(([p, b]) => [p, b.length])), folders: coll("Folder").map(f => f.name) };

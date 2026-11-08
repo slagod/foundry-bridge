@@ -197,7 +197,7 @@ class Bridge:
         return self.call("playlists.stop", **({"playlist": playlist} if playlist else {}))
 
     def update(self, type: str, id: str, data: dict) -> dict:
-        """Changes fields of an existing world Actor or Item by id (not its embedded items: actor_items_*)."""
+        """Changes fields of an existing world document by id, bridge key or uuid (not its embedded documents)."""
         return self.call("documents.update", type=type, id=id, data=data)
 
     def give(self, actor: str, items: list[dict | str]) -> list[dict]:
@@ -210,3 +210,18 @@ class Bridge:
 
     def take(self, actor: str, ids: list[str]) -> int:
         return self.call("actors.items.remove", actor=actor, ids=ids)
+
+    # --- embedded documents of any allowed parent ---------------------------------
+    def embedded_create(self, parent_type: str, parent: str, name: str, data: list[dict]) -> list[dict]:
+        """E.g. ("Scene", key, "Wall", [...]), ("Actor", id, "ActiveEffect", [...]); the others stay."""
+        return self.call("embedded.create", parent={"type": parent_type, "id": parent}, name=name, data=data)
+
+    def embedded_update(self, parent_type: str, parent: str, name: str, data: list[dict]) -> list[str]:
+        return self.call("embedded.update", parent={"type": parent_type, "id": parent}, name=name, data=data)
+
+    def embedded_delete(self, parent_type: str, parent: str, name: str, ids: list[str]) -> int:
+        return self.call("embedded.delete", parent={"type": parent_type, "id": parent}, name=name, ids=ids)
+
+    def pan(self, x: float, y: float, grid: bool = False, scale: float | None = None, pull: bool = True) -> dict:
+        """The GM's view to a point of the viewed scene; with `pull` the players' views follow."""
+        return self.call("canvas.pan", x=x, y=y, grid=grid, pull=pull, **({"scale": scale} if scale else {}))

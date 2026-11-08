@@ -6,7 +6,9 @@ Opis, API i bezpieczeństwo:
 
 - `src/foundry_bridge/` — `server.py` (aiohttp: HTTP dla skryptów, WS dla modułu),
   `client.py` (tylko stdlib — klienci nie potrzebują aiohttp), `cli.py`, `config.py` (klucz/port).
-- `module/` — moduł Foundry (v12–v13), `scripts/bridge.js` bez kroku budowania.
+- `module/` — moduł Foundry (v12–v13) bez kroku budowania: `scripts/loader.js` (ustawienia, wybór kodu) i
+  `scripts/bridge.js` (operacje). Przy *Load operations from the bridge* zmiana `bridge.js` = restart bridge'a,
+  bez wydania; zmiana `loader.js` wymaga wydania.
 - Lista operacji jest w dwóch miejscach: `OPS` w `__init__.py` i `OPS` w `bridge.js` — zmieniaj razem.
 - **Nie dodawaj operacji wykonujących dowolny kod** (eval, Macro, `executeScript`). To świadoma granica.
 - Wiedza o systemie gry (wfrp4e) nie trafia tutaj — tylko do narzędzi generujących treść.
